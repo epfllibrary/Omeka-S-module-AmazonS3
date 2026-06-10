@@ -122,7 +122,7 @@ class Module extends AbstractModule
         }
 
         $region = $store->determineBucketRegion();
-        if ($region !== false && $region != $settings->get(AwsS3::OPTION_REGION)) {
+        if ($region !== false && $region != $settings->get(AwsS3::OPTION_REGION) && $region !=="") {
             $controller->messenger()->addErrors([sprintf(
                 'Wrong region. Please use region of a bucket: %s', // @translate
                 $region
