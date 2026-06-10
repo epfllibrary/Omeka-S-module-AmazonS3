@@ -18,6 +18,7 @@ class AwsS3 implements StoreInterface
     const OPTION_REGION = 'amazons3_region';
     const OPTION_BUCKET = 'amazons3_bucket';
     const OPTION_EXPIRATION = 'amazons3_expiration';
+    const OPTION_ENDPOINT = 'amazons3_endpoint';
 
     const STREAM_WRAPPER_NAME = 's3';
 
@@ -45,6 +46,11 @@ class AwsS3 implements StoreInterface
      * @var string
      */
     protected $lastError;
+    /**
+     * @var string
+     */
+    protected $endpoint;
+
 
     /**
      * @param Logger $logger
@@ -55,10 +61,13 @@ class AwsS3 implements StoreInterface
         $this->logger = $logger;
         $this->bucket = $parameters['bucket'];
         $this->expiration = $parameters['expiration'];
+        $this->endpoint = $parameters['endpoint'] ?? null;
 
         $this->client = new S3Client([
             'version' => 'latest',
             'region' => $parameters['region'],
+            'endpoint' => $parameters['endpoint'], 
+            'use_path_style_endpoint' => true,
             'credentials' => new Credentials($parameters['key'], $parameters['secretKey']),
         ]);
         $this->client->registerStreamWrapper();

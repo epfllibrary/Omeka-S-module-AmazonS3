@@ -71,6 +71,18 @@ class ConfigForm extends Form
                     'id' => 'amazons3_expiration',
                 ],
             ])
+            ->add([
+                'name' => 'amazons3_endpoint',
+                'type' => Element\Text::class,
+                'options' => [
+                    'label' => 'Endpoint (S3 réel)', // @translate
+                    'info' => 'URL complète du S3 réel pour les signatures AWS. Ex: http://192.168.x.20:9000', // @translate
+                ],
+                'attributes' => [
+                    'id' => 'amazons3_endpoint',
+                    'placeholder' => 'http://192.168.x.20:9000',
+                ],
+            ])
         ;
 
         $this->getInputFilter()
@@ -89,6 +101,10 @@ class ConfigForm extends Form
             ->add([
                 'name' => 'amazons3_region',
                 'required' => true,
+            ])
+            ->add([
+                'name' => 'amazons3_endpoint',
+                'required' => false,
             ])
         ;
     }
