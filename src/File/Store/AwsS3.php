@@ -19,6 +19,7 @@ class AwsS3 implements StoreInterface
     const OPTION_BUCKET = 'amazons3_bucket';
     const OPTION_EXPIRATION = 'amazons3_expiration';
     const OPTION_ENDPOINT = 'amazons3_endpoint';
+    const OPTION_BASE_URI = 'amazons3_base_uri';
 
     const STREAM_WRAPPER_NAME = 's3';
 
@@ -46,11 +47,16 @@ class AwsS3 implements StoreInterface
      * @var string
      */
     protected $lastError;
+
     /**
      * @var string
      */
     protected $endpoint;
 
+    /**
+     * @var string
+     */
+    protected $baseUri;
 
     /**
      * @param Logger $logger
@@ -62,6 +68,7 @@ class AwsS3 implements StoreInterface
         $this->bucket = $parameters['bucket'];
         $this->expiration = $parameters['expiration'];
         $this->endpoint = $parameters['endpoint'] ?? null;
+        $this->baseUri = $parameters['baseUri'] ?? null;
 
         $this->client = new S3Client([
             'version' => 'latest',
@@ -342,9 +349,15 @@ class AwsS3 implements StoreInterface
         $expiration = $this->getExpiration();
 
         if (!$expiration) {
-            $endpoint = $this->getClient()->getEndpoint();
-            $uri = $endpoint . '/' . $bucket . '/' . $path;
+            // Utiliser base_uri s'il est configuré, sinon utiliser l'endpoint du client
+            if ($this->baseUri) {
+                $uri = rtrim($this->baseUri, '/') . '/' . $path;
+            } else {
+                $endpoint = $this->getClient()->getEndpoint();
+                $uri = $endpoint . '/' . $bucket . '/' . $path;
+            }
         } else {
+            // URLs pré-signées (pas de changement)
             $cmd = $this->getClient()->getCommand('GetObject', [
                 'Bucket' => $bucket,
                 'Key' => $path,

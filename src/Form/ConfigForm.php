@@ -83,6 +83,18 @@ class ConfigForm extends Form
                     'placeholder' => 'http://192.168.x.20:9000',
                 ],
             ])
+            ->add([
+                'name' => 'amazons3_base_uri',
+                'type' => Element\Text::class,
+                'options' => [
+                    'label' => 'Public Base URI (proxy optionnel)', // @translate
+                    'info' => 'URL publique pour les fichiers générés dans le HTML. Si vide, utilise l’endpoint. Ex: https://omeka.mondomaine.local/medias/', // @translate
+                ],
+                'attributes' => [
+                    'id' => 'amazons3_base_uri',
+                    'placeholder' => 'https://omeka.mondomaine.local/medias/',
+                ],
+            ])
         ;
 
         $this->getInputFilter()
@@ -104,6 +116,10 @@ class ConfigForm extends Form
             ])
             ->add([
                 'name' => 'amazons3_endpoint',
+                'required' => false,
+            ])
+            ->add([
+                'name' => 'amazons3_base_uri',
                 'required' => false,
             ])
         ;

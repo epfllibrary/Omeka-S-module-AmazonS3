@@ -22,6 +22,7 @@ return [
             'amazons3_bucket' => null,
             'amazons3_expiration' => 0,
             'amazons3_endpoint' => null,
+            'amazons3_base_uri' => null,
         ],
     ],
 ];
