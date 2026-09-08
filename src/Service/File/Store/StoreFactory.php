@@ -2,7 +2,7 @@
 namespace AmazonS3\Service\File\Store;
 
 use AmazonS3\File\Store\AwsS3;
-use Interop\Container\ContainerInterface;
+use Psr\Container\ContainerInterface;
 use Laminas\ServiceManager\Factory\FactoryInterface;
 use Omeka\File\Exception\ConfigException;
 
@@ -16,12 +16,15 @@ class StoreFactory implements FactoryInterface
      *
      * @return AwsS3
      */
-    public function __invoke(ContainerInterface $services, $requestedName, array $options = null)
+    public function __invoke(ContainerInterface $services, $requestedName, ?array $options = null)
     {
         $settings = $services->get('Omeka\Settings');
         $parameters = [
             'key' => $settings->get(AwsS3::OPTION_AWS_KEY),
-            'secretKey' => $settings->get(AwsS3::OPTION_AWS_SECRET_KEY),
+            // The secret key is encrypted at rest since version 3.4.6; decrypt
+            // returns plain values as is, so older settings still work.
+            'secretKey' => $services->get('Omeka\Cipher')
+                ->decrypt((string) $settings->get(AwsS3::OPTION_AWS_SECRET_KEY)),
             'region' => $settings->get(AwsS3::OPTION_REGION, 'us-east-2'),
             'bucket' => $settings->get(AwsS3::OPTION_BUCKET),
             'expiration' => max(0, (int) $settings->get(AwsS3::OPTION_EXPIRATION, 0)),
@@ -39,7 +42,8 @@ class StoreFactory implements FactoryInterface
 
         return new AwsS3(
             $services->get('Omeka\Logger'),
-            $parameters
+            $parameters,
+            $services->get('Omeka\File\MediaTypeMap')
         );
     }
 }

@@ -2,7 +2,6 @@
 namespace AmazonS3\File\Store;
 
 use Aws\Credentials\Credentials;
-use Aws\S3\Exception\S3Exception;
 use Aws\S3\S3Client;
 use Laminas\Log\Logger;
 use Omeka\File\Exception\RuntimeException;
@@ -59,16 +58,31 @@ class AwsS3 implements StoreInterface
     protected $baseUri;
 
     /**
+     * Media type of each extension, built from the media type map of Omeka.
+     *
+     * @var array
+     */
+    protected $mediaTypesByExtension = [];
+
+
+    /**
      * @param Logger $logger
      * @param array $parameters
+     * @param array $mediaTypeMap Extensions of each media type.
      */
-    public function __construct(Logger $logger, array $parameters)
+    public function __construct(Logger $logger, array $parameters, array $mediaTypeMap = [])
     {
         $this->logger = $logger;
         $this->bucket = $parameters['bucket'];
         $this->expiration = $parameters['expiration'];
         $this->endpoint = $parameters['endpoint'] ?? null;
         $this->baseUri = $parameters['baseUri'] ?? null;
+
+        foreach ($mediaTypeMap as $mediaType => $extensions) {
+            foreach ($extensions as $extension) {
+                $this->mediaTypesByExtension[strtolower($extension)] ??= $mediaType;
+            }
+        }
 
         $this->client = new S3Client([
             'version' => 'latest',
@@ -151,7 +165,12 @@ class AwsS3 implements StoreInterface
     public function canStore()
     {
         $bucket = $this->getBucketName();
-        return $this->getClient()->doesBucketExist($bucket);
+        try {
+            return $this->getClient()->doesBucketExist($bucket);
+        } catch (\Throwable $e) {
+            $this->setLastError($e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -164,7 +183,7 @@ class AwsS3 implements StoreInterface
         $result = false;
         try {
             $result = $this->getClient()->determineBucketRegion($this->getBucketName());
-        } catch (S3Exception $e) {
+        } catch (\Throwable $e) {
             $this->setLastError($e->getMessage());
         }
         return $result;
@@ -184,7 +203,7 @@ class AwsS3 implements StoreInterface
             foreach ($response->get('Buckets') as $bucket) {
                 $result[] = $bucket['Name'];
             }
-        } catch (S3Exception $e) {
+        } catch (\Throwable $e) {
             $this->setLastError($e->getMessage());
             return false;
         }
@@ -200,13 +219,12 @@ class AwsS3 implements StoreInterface
     public function put($source, $storagePath): void
     {
         $bucket = $this->getBucketName();
-        $mime = mime_content_type($source);
         $args = [
             'Bucket' => $bucket,
             'Key' => $storagePath,
             'SourceFile' => $source,
             'ACL' => 'public-read',
-            'ContentType' => $mime,
+            'ContentType' => $this->mediaType($storagePath, $source),
         ];
         if ($this->getExpiration()) {
             $args['ACL'] = 'private';
@@ -214,15 +232,34 @@ class AwsS3 implements StoreInterface
 
         try {
             $this->getClient()->putObject($args);
-        } catch (S3Exception $e) {
-            throw new RuntimeException(
-                sprintf('Failed to copy "%s" to "%s" on bucket "%s". %s', $source, $storagePath, $bucket, $e->getMessage()) // @translate
-            );
+        } catch (\Throwable $e) {
+            throw $this->storeException(sprintf(
+                'Failed to copy "%s" to "%s" on bucket "%s". %s', // @translate
+                $source, $storagePath, $bucket, $e->getMessage()
+            ), $e);
         }
 
         $this->getLogger()->info(
             sprintf("%s: Stored '%s' as '%s' on bucket '%s'.", self::class, $source, $storagePath, $bucket) // @translate
         );
+    }
+
+    /**
+     * Get the media type to store, according to the extension of the file.
+     *
+     * The extension of the stored path is the one that Omeka determined from
+     * the media, so it is more reliable than the detection done on the content
+     * of the file, that returns a generic type for csv, json, svg or the
+     * office formats.
+     *
+     * @param string $storagePath Storage path, with the extension of the media.
+     * @param string $source Local path, used as a fallback.
+     */
+    protected function mediaType($storagePath, $source): string
+    {
+        $extension = strtolower((string) pathinfo((string) $storagePath, PATHINFO_EXTENSION));
+        return $this->mediaTypesByExtension[$extension]
+            ?? (@mime_content_type($source) ?: 'application/octet-stream');
     }
 
     /**
@@ -234,11 +271,14 @@ class AwsS3 implements StoreInterface
     public function move($source, $dest): void
     {
         $bucket = $this->getBucketName();
+        // The source of a copy is a single string "bucket/key", url-encoded
+        // segment by segment in order to keep the separators of the key.
+        $copySource = $bucket . '/' . implode('/', array_map('rawurlencode', explode('/', (string) $source)));
         $args = [
-            'SourceBucket' => $bucket,
-            'SourceKey' => $source,
-            'DestinationBucket' => $bucket,
-            'DestinationKey' => $dest,
+            'Bucket' => $bucket,
+            'Key' => $dest,
+            'CopySource' => $copySource,
+            'MetadataDirective' => 'COPY',
             'ACL' => 'public-read',
         ];
         if ($this->getExpiration()) {
@@ -251,10 +291,11 @@ class AwsS3 implements StoreInterface
                 'Bucket' => $bucket,
                 'Key' => $source,
             ]);
-        } catch (S3Exception $e) {
-            throw new RuntimeException(
-                sprintf('Failed to copy "%s" to "%s" on bucket "%s". %s', $source, $dest, $bucket, $e->getMessage()) // @translate
-            );
+        } catch (\Throwable $e) {
+            throw $this->storeException(sprintf(
+                'Failed to move "%s" to "%s" on bucket "%s". %s', // @translate
+                $source, $dest, $bucket, $e->getMessage()
+            ), $e);
         }
 
         $this->getLogger()->info(sprintf("%s: Moved '%s' to '%s'.", self::class, $source, $dest)); // @translate
@@ -278,9 +319,11 @@ class AwsS3 implements StoreInterface
                 'Bucket' => $bucket,
                 'Key' => $storagePath,
             ]);
-        } catch (S3Exception $e) {
-            $this->setLastError($e->getMessage());
-            throw new RuntimeException('Unable to delete file. ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw $this->storeException(sprintf(
+                'Failed to delete "%s" on bucket "%s". %s', // @translate
+                $storagePath, $bucket, $e->getMessage()
+            ), $e);
         }
 
         $this->getLogger()->info(sprintf("%s: Removed object '%s'.", self::class, $storagePath)); // @translate
@@ -308,9 +351,11 @@ class AwsS3 implements StoreInterface
                     sprintf("%s: Tried to delete missing object '%s'.", self::class, $storagePath)); // @translate
             }
             $this->getClient()->deleteMatchingObjects($bucket, $storagePath, $regex);
-        } catch (S3Exception $e) {
-            $this->setLastError($e->getMessage());
-            throw new RuntimeException('Unable to delete file. ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw $this->storeException(sprintf(
+                'Failed to delete "%s" on bucket "%s". %s', // @translate
+                $storagePath, $bucket, $e->getMessage()
+            ), $e);
         }
 
         $this->getLogger()->info(sprintf("%s: Removed object '%s'.", self::class, $storagePath)); // @translate
@@ -330,10 +375,25 @@ class AwsS3 implements StoreInterface
 
         try {
             return $this->getClient()->doesObjectExist($bucket, $storagePath);
-        } catch (S3Exception $e) {
-            $this->setLastError($e->getMessage());
-            throw new RuntimeException('Unable to check file. ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw $this->storeException(sprintf(
+                'Failed to check "%s" on bucket "%s". %s', // @translate
+                $storagePath, $bucket, $e->getMessage()
+            ), $e);
         }
+    }
+
+    /**
+     * Store the issue, log it, and build the exception expected by Omeka.
+     *
+     * Any exception is managed, not only the S3 ones: an invalid argument, a
+     * missing credential or a network failure must be reported the same way.
+     */
+    protected function storeException(string $message, \Throwable $e): RuntimeException
+    {
+        $this->setLastError($e->getMessage());
+        $this->getLogger()->err($message);
+        return new RuntimeException($message, (int) $e->getCode(), $e);
     }
 
     /**
@@ -348,24 +408,36 @@ class AwsS3 implements StoreInterface
         $bucket = urlencode($this->getBucketName());
         $expiration = $this->getExpiration();
 
+        // Encode each segment: the storage id may contain spaces or utf-8
+        // characters (Archive Repertory modes other than "full"), that are not
+        // valid in a url. The separators "/" are kept as is.
+        $key = implode('/', array_map('rawurlencode', explode('/', (string) $path)));
+        $uri = $this->getClient()->getEndpoint() . '/' . $bucket . '/' . $key;
+
+        if ($this->baseUri) {
+            $uri = rtrim($this->baseUri, '/') . '/' . $key;
+        } 
+
         if (!$expiration) {
-            // Utiliser base_uri s'il est configuré, sinon utiliser l'endpoint du client
-            if ($this->baseUri) {
-                $uri = rtrim($this->baseUri, '/') . '/' . $path;
-            } else {
-                $endpoint = $this->getClient()->getEndpoint();
-                $uri = $endpoint . '/' . $bucket . '/' . $path;
-            }
-        } else {
-            // URLs pré-signées (pas de changement)
+            return $uri;
+        }
+
+        try {
             $cmd = $this->getClient()->getCommand('GetObject', [
                 'Bucket' => $bucket,
                 'Key' => $path,
             ]);
             $request = $this->getClient()->createPresignedRequest($cmd, sprintf('+%d minutes', $expiration));
-            $uri = (string) $request->getUri();
+            return (string) $request->getUri();
+        } catch (\Throwable $e) {
+            // Return the unsigned uri, so a signing issue does not break the
+            // whole page: it works when the bucket is public.
+            $this->setLastError($e->getMessage());
+            $this->getLogger()->err(sprintf(
+                'Failed to sign the uri of "%s" on bucket "%s". %s', // @translate
+                $path, $bucket, $e->getMessage()
+            ));
+            return $uri;
         }
-
-        return $uri;
     }
 }

@@ -31,28 +31,52 @@
  */
 namespace AmazonS3;
 
-if (!class_exists(\Generic\AbstractModule::class)) {
-    require file_exists(dirname(__DIR__) . '/Generic/AbstractModule.php')
-        ? dirname(__DIR__) . '/Generic/AbstractModule.php'
-        : __DIR__ . '/src/Generic/AbstractModule.php';
+// Load the module dependencies when installed as a zip.
+// With composer, libraries are stored in omeka vendor/ and the module has none.
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
+
+// Common may be installed but not registered in autoloader, in particular
+// during upgrade. So dynamically register all classes of the module.
+if (!defined('COMMON_PSR4_FALLBACK')) {
+    foreach ([
+        OMEKA_PATH . '/modules/Common/src',
+        OMEKA_PATH . '/composer-addons/modules/Common/src',
+        dirname(__DIR__) . '/Common/src',
+    ] as $commonSrc) {
+        if (file_exists($commonSrc . '/TraitModule.php')) {
+            define('COMMON_PSR4_FALLBACK', $commonSrc);
+            spl_autoload_register(static function ($class): void {
+                if (str_starts_with($class, 'Common\\')) {
+                    $file = COMMON_PSR4_FALLBACK . '/' . strtr(substr($class, 7), '\\', '/') . '.php';
+                    if (file_exists($file)) {
+                        require_once $file;
+                    }
+                }
+            });
+            break;
+        }
+    }
 }
 
 use AmazonS3\File\Store\AwsS3;
-use Generic\AbstractModule;
+use Common\Stdlib\PsrMessage;
+use Common\TraitModule;
 use Laminas\Mvc\Controller\AbstractController;
 use Laminas\Mvc\MvcEvent;
+use Omeka\Module\AbstractModule;
 use Omeka\Module\Exception\ModuleCannotInstallException;
 
 class Module extends AbstractModule
 {
+    use TraitModule;
+
     const NAMESPACE = __NAMESPACE__;
 
     public function onBootstrap(MvcEvent $event): void
     {
         parent::onBootstrap($event);
-
-        // Add autoloader for AWS SDK classes.
-        require_once __DIR__ . '/vendor/autoload.php';
 
         /** @var \Laminas\ServiceManager\ServiceManager $services */
         $services = $this->getServiceLocator();
@@ -79,18 +103,28 @@ class Module extends AbstractModule
 
     protected function preInstall(): void
     {
+        $services = $this->getServiceLocator();
+        $translator = $services->get('MvcTranslator');
+
+        if (!method_exists($this, 'checkModuleActiveVersion') || !$this->checkModuleActiveVersion('Common', '3.4.91')) {
+            $message = new PsrMessage(
+                'The module {module} should be upgraded to version {version} or later.', // @translate
+                ['module' => 'Common', 'version' => '3.4.91']
+            );
+            throw new ModuleCannotInstallException((string) $message->setTranslator($translator));
+        }
+
         if (!file_exists(__DIR__ . '/vendor/autoload.php')) {
-            $t = $this->getServiceLocator()->get('MvcTranslator');
             throw new ModuleCannotInstallException(
-                $t->translate('The AWS SDK library should be installed.') // @translate
-                    . ' ' . $t->translate('See module’s installation documentation.') // @translate
+                $translator->translate('The AWS SDK library should be installed.') // @translate
+                    . ' ' . $translator->translate('See module’s installation documentation.') // @translate
             );
         }
     }
 
     public function handleConfigForm(AbstractController $controller)
     {
-        $result = parent::handleConfigForm($controller);
+        $result = $this->handleConfigFormAuto($controller);
         if (!$result) {
             return false;
         }
@@ -105,19 +139,27 @@ class Module extends AbstractModule
             return false;
         }
 
-        // Get all buckets and check client connection.
-        $buckets = $store->getBuckets();
-        if ($buckets === false) {
-            $controller->messenger()->addErrors(['Wrong credentials. Unable to connect to Amazon S3 service.']); // @translate
-            return false;
-        }
-
-        //check if specified bucket exists
-        if (is_array($buckets) && !in_array($settings->get(AwsS3::OPTION_BUCKET), $buckets)) {
-            $controller->messenger()->addErrors([sprintf(
-                'Wrong bucket. Please specify an existing one, like: %s', // @translate
-                implode(', ', array_slice($buckets, 0, 3))
-            )]);
+        // Check the bucket that is really used, and not the list of all the
+        // buckets: listing them requires the permission "s3:ListAllMyBuckets"
+        // on all the buckets, that a user dedicated to Omeka rarely has.
+        if (!$store->canStore()) {
+            $bucket = (string) $settings->get(AwsS3::OPTION_BUCKET);
+            // Keep the error of the bucket: listing the buckets replaces it.
+            $error = (string) $store->getLastError();
+            // The list of the buckets is only used to help the user, when it
+            // is available, so it never makes the config fail by itself.
+            $buckets = $store->getBuckets();
+            if (is_array($buckets) && $buckets && !in_array($bucket, $buckets)) {
+                $controller->messenger()->addErrors([sprintf(
+                    'Wrong bucket. Please specify an existing one, like: %s', // @translate
+                    implode(', ', array_slice($buckets, 0, 3))
+                )]);
+            } else {
+                $controller->messenger()->addErrors([sprintf(
+                    'Unable to access the bucket "%1$s". Check the credentials, the region and the rights of the user on this bucket. %2$s', // @translate
+                    $bucket, $error
+                )]);
+            }
             return false;
         }
 
@@ -129,5 +171,7 @@ class Module extends AbstractModule
             )]);
             return false;
         }
+
+        return true;
     }
 }

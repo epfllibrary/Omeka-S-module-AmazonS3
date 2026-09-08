@@ -4,12 +4,12 @@ namespace AmazonS3\Service\File\ArchiveRepertory;
 use AmazonS3\File\ArchiveRepertory\FileManager;
 use AmazonS3\File\Store\AwsS3;
 use ArchiveRepertory\Service\FileManagerFactory as ArchiveRepertoryFileManagerFactory;
-use Interop\Container\ContainerInterface;
+use Psr\Container\ContainerInterface;
 use Omeka\Service\Exception\ConfigException;
 
 class FileManagerFactory extends ArchiveRepertoryFileManagerFactory
 {
-    public function __invoke(ContainerInterface $services, $requestedName, array $options = null)
+    public function __invoke(ContainerInterface $services, $requestedName, ?array $options = null)
     {
         $config = $services->get('Config');
 
@@ -28,10 +28,14 @@ class FileManagerFactory extends ArchiveRepertoryFileManagerFactory
         $ingesters = $config['archiverepertory']['ingesters'];
 
         return new FileManager(
-            $thumbnailTypes,
+            $services->get('ArchiveRepertory\FileWriter'),
+            $services->get('ControllerPluginManager')->get('messenger'),
+            $services->get('Omeka\Settings'),
+            $services->get('MvcTranslator'),
+            $services->get('Omeka\Logger'),
             $basePath,
             $ingesters,
-            $services
+            $thumbnailTypes
         );
     }
 }
