@@ -412,11 +412,12 @@ class AwsS3 implements StoreInterface
         // characters (Archive Repertory modes other than "full"), that are not
         // valid in a url. The separators "/" are kept as is.
         $key = implode('/', array_map('rawurlencode', explode('/', (string) $path)));
-        $uri = $this->getClient()->getEndpoint() . '/' . $bucket . '/' . $key;
-
+        
         if ($this->baseUri) {
-            $uri = rtrim($this->baseUri, '/') . '/' . $key;
-        } 
+            $uri = rtrim($this->baseUri, '/') . '/' . $bucket . '/' . $key;
+        } else {
+            $uri = $this->getClient()->getEndpoint() . '/' . $bucket . '/' . $key;
+        }
 
         if (!$expiration) {
             return $uri;
